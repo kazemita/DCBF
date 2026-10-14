@@ -1,50 +1,122 @@
-**Dual-Core Beamformer (DCBF) — re-implementation and Table 1 check**
+# DCBF: re-examining the Dual-Core Beamformer simulations
 
-Re-implementation of Diwakar, Huang et al., *Dual-Core Beamformer for obtaining highly
-correlated neuronal networks in MEG*, NeuroImage 54 (2011) 253–263, in Python/NumPy.
+Python code and simulation outputs for the commentary
 
-## Files
+> *Re-examining the Dual-Core Beamformer: a correct optimum, a fragile search, and amplitudes set by data length*
+> (submitted to NeuroImage, Comments and Controversies)
 
-`dcbf.py` : forward model (Sarvas spherical conductor, 306-ch Vectorview-like array), 7 mm source grid, SVD reduction to m×2, the DCBF itself (eqs 9–15), modified Powell search with taboo list (eq 16), brute-force search 
-`setup_model.py` : builds the grid (5,278 nodes) and lead fields → `model.npz` 
-`sim.py` : sinusoidal dipole pairs + white sensor noise at a set sensor-domain SNR; Fourier amplitude read-out (simulator)
-`run_table1.py` : Table 1 experiment. `python3 run_table1.py N_SAMPLES N_REALISATIONS BRUTE(0/1) [REP0] [TAG] [CONFIG A/B/C]` 
-`aggregate.py` : pools logs and prints the comparison with the paper's Table 1 
-`paper_table1_check.py` : internal-consistency check of the numbers printed in the paper's Table 1 
-`log_*.txt` : raw per-run results (one JSON line per SNR × realisation) 
+which re-examines the simulations in
 
-Run: `python3 setup_model.py && python3 run_table1.py 5000 5 1 0 "" A && python3 aggregate.py A log_*.txt`
+> Diwakar, M., Huang, M.-X., Srinivasan, R., et al., 2011. Dual-Core Beamformer for obtaining highly correlated
+> neuronal networks in MEG. *NeuroImage* 54, 253–263. https://doi.org/10.1016/j.neuroimage.2010.07.023
 
-## Implementation notes
+The repository contains an independent implementation of the Dual-Core Beamformer (DCBF) and its modified Powell
+search, the scripts that repeat the simulations behind Tables 1 and 2 of that paper, the additional analyses reported
+in the commentary, and the raw outputs of every run, so that all numbers and both figures can be regenerated.
 
-* **DCBF.** `Ldual = [L1 L2]` (m×4 after SVD reduction). `K = Q⁻¹R` with `Q = Ldualᵀ C⁻¹ Ldual`,
-  `R = Ldualᵀ C⁻¹ ε C⁻¹ Ldual`; `Z = 1/min eig(K)` (computed as the largest generalised
-  eigenvalue of (Q,R) via Cholesky, batched over all partners j); `P = 1/min eig(Q)`,
-  `O = Umin`; `p(t) = O (P C⁻¹ Ldual O)ᵀ b(t)`.
-* **Powell search.** Random r1 → r2 = argmax f(r1,·) → r1 = argmax f(·,r2) → … until the pair is
-  stable. 1000 random restarts. A global taboo list stores every traversed pair; a restart that
-  reaches a traversed pair stops and inherits that search's end point.
-* **"Average # searches"** is taken as restarts needed per success = 1000 / (number of restarts
-  that ended on the true pair); time = that × measured seconds per restart.
-* **Simulation (Table 1 conditions).** One pair, 30 Hz, 100 % correlated (same phase), each
-  dipole 10 nAm and 20 nAm along its two SVD tangential directions (orientation ratio 0.5),
-  SNR = total signal power / total noise power, 1 kHz sampling, separate noise-only segment for ε.
+## Requirements
 
-## Deviations from the paper 
+Python 3.10 or later with NumPy, SciPy and Matplotlib (`pip install -r requirements.txt`). No MEG toolbox is needed.
 
-* Spherical head instead of subject BEM; volumetric 7 mm grid (5,278 nodes, close to the paper's
-  "5000 dipole grid") instead of a FreeSurfer gray-matter surface.
-* Dipole locations, segment length, sensor units/noise model and random seeds are not given in
-  the paper; they were chosen here (source pairs A/B/C in `run_table1.py`).
-* The segment length matters a great deal (see results): N = 5000 samples reproduces the
-  paper's amplitude level; N = 1000 gives ~28 % underestimation.
+## Quick start (about one minute)
 
-## Table 2 (varying intra-pair correlation)
+All raw results are included in `results/`, so the summaries and figures can be regenerated without re-running any
+simulation:
 
-`run_table2.py` : Table 2 experiment: SNR 2, 30 Hz, 10/20 nAm, correlation set by phase-shifting dipole 2 (r = cos φ). `CORRS=... python3 run_table2.py N_SAMPLES N_REAL BRUTE REP0 CONFIG` 
-`aggregate_t2.py` : pools `t2_*.txt` logs and prints the comparison with the paper
-`inspect_misses.py` : shows where the best pair landed in realisations where it was not the true pair 
-`paired_Z.py` : pseudo-Z versus correlation with identical noise across correlations (paired comparison) 
-`paper_table2_check.py` : internal-consistency check of the paper's Table 2 
+```bash
+python3 setup_model.py                 # forward model -> model.npz (about 15 s)
+python3 aggregate.py N5000 results/log_N5000.txt results/log_N5000_reps.txt   # Table 1, pair A
+python3 aggregate.py N5000_B results/log_N5000_B.txt                          # Table 1, pair B (likewise C)
+python3 aggregate_t2.py results/t2_*.txt                                      # Table 2, all pairs
+python3 aggregate_three.py             # three correlated sources
+python3 aggregate_compare.py           # least-squares fit vs DCBF on the same data
+python3 paper_table1_check.py          # internal consistency of the published Table 1
+python3 paper_table2_check.py          # internal consistency of the published Table 2
+python3 make_figures.py                # Figures 1 and 2 -> figures/
+```
 
-Run: `python3 run_table2.py 5000 5 1 0 A > t2_A.txt && python3 aggregate_t2.py t2_*.txt`
+## What is in the repository
+
+| File | Purpose |
+|---|---|
+| `dcbf.py` | Forward model (spherical conductor, Sarvas 1987; 306-channel Vectorview-like array), 7 mm source grid, SVD reduction of each lead field to two orientations, the DCBF (eqs. 9–15 of the paper), the modified Powell search with random restarts and a taboo list (eq. 16), and an exhaustive pair search |
+| `sim.py` | Simulator: 30 Hz sinusoidal dipoles (10 and 20 nAm along the two orientations), white sensor noise at a set SNR, separate noise-only segment for the noise covariance; Fourier amplitude read-out |
+| `setup_model.py` | Builds `model.npz` (grid of 5,278 nodes and reduced lead fields) |
+| `run_table1.py` | Table 1 conditions: SNR 4 to 0.25, fully correlated pair |
+| `run_table2.py` | Table 2 conditions: SNR 2, correlation 100/86.6/75/50% (phase shift of one dipole, r = cos φ) |
+| `amp_vs_length.py` | Amplitude at the true pair versus data length (1,000–20,000 samples), SNR and correlation |
+| `paired_Z.py` | Pseudo-Z versus correlation with identical noise across correlations (paired design) |
+| `inspect_misses.py` | Where the wrong pair lies in the Table 2 realisations where the DCBF picked a wrong pair |
+| `run_three.py`, `run_three2.py` | Three correlated sources (30 Hz, phases 0/22.5/45°, SNR 0.25): DCBF, and least-squares fits |
+| `lsq_methods.py`, `run_compare.py` | Least-squares localisation with alternating re-estimation, run on the same data as the DCBF |
+| `aggregate*.py`, `paper_table*_check.py`, `make_figures.py` | Summaries, consistency checks and figures |
+| `results/` | Raw outputs: one JSON line per simulated realisation |
+| `figures/` | Figures 1 and 2 of the commentary (created by `make_figures.py`) |
+
+## From the commentary to the code
+
+| Statement in the commentary | Script | Output |
+|---|---|---|
+| True pair is the global maximum at every SNR (21 of 21 exhaustive searches) | `run_table1.py` (third argument `1`) | `results/log_N5000*.txt` (`brute_ok`) |
+| Restarts per success and search failures at SNR 3–4 (Fig. 1A) | `run_table1.py` | `results/log_N5000*.txt`, `results/log_extra*.txt` |
+| Orientation and amplitude accuracy, drift with SNR | `run_table1.py`, `aggregate.py` | `results/log_N5000*.txt` |
+| Wrong pair at 75% and 50% correlation | `run_table2.py`, `inspect_misses.py` | `results/t2_*.txt` |
+| Pseudo-Z rises as correlation falls (Fig. 1B) | `paired_Z.py` | `results/pairedZ_*.npy` |
+| Amplitude law (1 − m/N)·√((1 + r)/2) (Fig. 2A) | `amp_vs_length.py` | `results/amp_vs_length.txt` |
+| Published Table 2 amplitudes follow √((1 + r)/2) (Fig. 2B) | `make_figures.py` | `figures/Figure2.*` |
+| 1,000-sample comparison (amplitude errors 25–34%) | `run_table1.py 1000 1 0` | `results/log_N1000.txt` |
+| Three correlated sources: two found, 48% amplitude suppression | `run_three.py`, `aggregate_three.py` | `results/three.txt` |
+| Least-squares fit finds the true pair in all 137 realisations | `run_compare.py`, `aggregate_compare.py` | `results/compare.txt` |
+
+## Re-running the simulations
+
+Run from the repository folder after `python3 setup_model.py`. Times are for a two-core machine; the Powell search
+(1,000 restarts) dominates and takes about one minute per realisation. Setting `OPENBLAS_NUM_THREADS=1` and running
+several commands in parallel is the fastest option.
+
+```bash
+# Table 1 (arguments: samples, realisations, exhaustive check 0/1, first realisation, tag, source pair)
+python3 run_table1.py 5000 1 1 0 "" A   > results/log_N5000.txt
+python3 run_table1.py 5000 4 0 1 _reps A > results/log_N5000_reps.txt
+python3 run_table1.py 5000 1 1 0 _B B   > results/log_N5000_B.txt
+python3 run_table1.py 5000 1 1 0 _C C   > results/log_N5000_C.txt
+SNRS=4.0,3.0 python3 run_table1.py 5000 10 0 5 _extraA A > results/log_extraA.txt
+SNRS=4.0,3.0 python3 run_table1.py 5000 5 0 1 _extraB B  > results/log_extraB.txt
+SNRS=4.0,3.0 python3 run_table1.py 5000 5 0 1 _extraC C  > results/log_extraC.txt
+python3 run_table1.py 1000 1 0          > results/log_N1000.txt
+
+# Table 2 (arguments: samples, realisations, exhaustive check 0/1, first realisation, source pair)
+python3 run_table2.py 5000 5 1 0 A > results/t2_A.txt
+python3 run_table2.py 5000 1 1 0 B > results/t2_B.txt
+python3 run_table2.py 5000 1 1 0 C > results/t2_C.txt
+CORRS=0.866,0.75,0.5 python3 run_table2.py 5000 10 0 5 A > results/t2_A_extra.txt
+CORRS=0.866,0.75,0.5 python3 run_table2.py 5000 5 0 1 B  > results/t2_B_extra.txt
+CORRS=0.866,0.75,0.5 python3 run_table2.py 5000 5 0 1 C  > results/t2_C_extra.txt
+
+# Additional analyses
+python3 amp_vs_length.py > results/amp_vs_length.txt     # about 10 min
+python3 paired_Z.py                                      # about 3 min
+python3 inspect_misses.py
+python3 run_three.py 5 > results/three.txt               # about 25 min
+python3 run_three2.py  > results/three2.txt
+python3 run_compare.py > results/compare.txt             # about 15 min
+```
+
+Random seeds are fixed in each script, so re-running reproduces the stored outputs.
+
+## Differences from the original study
+
+* A spherical head model and a volumetric 7 mm grid (5,278 nodes) replace the subject-specific boundary-element model
+  and cortical grid of the original paper, which were not available.
+* Source locations, data length and noise realisations are not reported in the paper and were chosen here (three
+  source pairs, 5,000 samples at 1 kHz). The data-length analysis shows how amplitudes and pseudo-Z depend on this choice.
+* Absolute pseudo-Z values and search counts should therefore not be compared one-to-one with the paper; trends and
+  failure modes are the comparison of interest.
+
+## Citation
+
+If you use this code, please cite the commentary (reference to be added on publication) and this repository.
+
+## Licence
+
+[MIT]
